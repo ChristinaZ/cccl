@@ -55,6 +55,9 @@ CUB_NAMESPACE_BEGIN
 
 struct DeviceTopK
 {
+  //! @brief The function TopKPairsStable() will prioritize elements with smaller indices
+  // ！ when encountering multiple elements equal to the kth largest (or smallest) value.
+  //!  In contrast, the function TopKPairs() will not do so.
   //! @tparam KeyInputIteratorT
   //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
   //!
@@ -117,16 +120,50 @@ struct DeviceTopK
     cudaStream_t stream = 0)
   {
     static constexpr bool SelectMin = false;
+    static constexpr bool IsStable  = false;
     return DispatchTopK<KeyInputIteratorT,
                         KeyOutputIteratorT,
                         ValueInputIteratorT,
                         ValueOutputIteratorT,
                         NumItemsT,
-                        SelectMin>::
+                        SelectMin,
+                        IsStable>::
       Dispatch(
         d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
   }
 
+  template <typename KeyInputIteratorT,
+            typename KeyOutputIteratorT,
+            typename ValueInputIteratorT,
+            typename ValueOutputIteratorT,
+            typename NumItemsT>
+  CUB_RUNTIME_FUNCTION static cudaError_t TopKPairsStable(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream = 0)
+  {
+    static constexpr bool SelectMin = false;
+    static constexpr bool IsStable  = true;
+    return DispatchTopK<KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        NumItemsT,
+                        SelectMin,
+                        IsStable>::
+      Dispatch(
+        d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
+  }
+
+  //! @brief The function TopKMinPairsStable() will prioritize elements with smaller indices
+  // ！ when encountering multiple elements equal to the kth largest (or smallest) value.
+  //!  In contrast, the function TopKMinPairs() will not do so.
   //! @tparam KeyInputIteratorT
   //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
   //!
@@ -189,12 +226,43 @@ struct DeviceTopK
     cudaStream_t stream = 0)
   {
     static constexpr bool SelectMin = true;
+    static constexpr bool IsStable  = false;
     return DispatchTopK<KeyInputIteratorT,
                         KeyOutputIteratorT,
                         ValueInputIteratorT,
                         ValueOutputIteratorT,
                         NumItemsT,
-                        SelectMin>::
+                        SelectMin,
+                        IsStable>::
+      Dispatch(
+        d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
+  }
+
+  template <typename KeyInputIteratorT,
+            typename KeyOutputIteratorT,
+            typename ValueInputIteratorT,
+            typename ValueOutputIteratorT,
+            typename NumItemsT>
+  CUB_RUNTIME_FUNCTION static cudaError_t TopKMinPairsStable(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream = 0)
+  {
+    static constexpr bool SelectMin = true;
+    static constexpr bool IsStable  = true;
+    return DispatchTopK<KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        NumItemsT,
+                        SelectMin,
+                        IsStable>::
       Dispatch(
         d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
   }
@@ -242,16 +310,17 @@ struct DeviceTopK
     cudaStream_t stream = 0)
   {
     static constexpr bool SelectMin = false;
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
-      d_temp_storage,
-      temp_storage_bytes,
-      d_keys_in,
-      d_keys_out,
-      static_cast<NullType*>(nullptr),
-      static_cast<NullType*>(nullptr),
-      num_items,
-      k,
-      stream);
+    static constexpr bool IsStable  = false;
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin, IsStable>::
+      Dispatch(d_temp_storage,
+               temp_storage_bytes,
+               d_keys_in,
+               d_keys_out,
+               static_cast<NullType*>(nullptr),
+               static_cast<NullType*>(nullptr),
+               num_items,
+               k,
+               stream);
   }
 
   //! @tparam KeyInputIteratorT
@@ -297,16 +366,17 @@ struct DeviceTopK
     cudaStream_t stream = 0)
   {
     static constexpr bool SelectMin = true;
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
-      d_temp_storage,
-      temp_storage_bytes,
-      d_keys_in,
-      d_keys_out,
-      static_cast<NullType*>(nullptr),
-      static_cast<NullType*>(nullptr),
-      num_items,
-      k,
-      stream);
+    static constexpr bool IsStable  = false;
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin, IsStable>::
+      Dispatch(d_temp_storage,
+               temp_storage_bytes,
+               d_keys_in,
+               d_keys_out,
+               static_cast<NullType*>(nullptr),
+               static_cast<NullType*>(nullptr),
+               num_items,
+               k,
+               stream);
   }
 };
 

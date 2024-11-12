@@ -32,7 +32,10 @@ CUB_NAMESPACE_BEGIN
 /**
  * Overload CUDA atomic functions for other 64bit unsigned/signed integer type
  */
+
 using ::atomicAdd;
+using ::atomicMin;
+
 _CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
 {
   return (long) atomicAdd((unsigned long long*) address, (unsigned long long) val);
@@ -46,6 +49,16 @@ _CCCL_DEVICE _CCCL_FORCEINLINE long long atomicAdd(long long* address, long long
 _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, unsigned long val)
 {
   return (unsigned long) atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
+}
+
+_CCCL_DEVICE _CCCL_FORCEINLINE long atomicMin(long* address, long val)
+{
+  return (long) atomicMin((unsigned long long*) address, (unsigned long long) val);
+}
+
+_CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicMin(unsigned long* address, unsigned long val)
+{
+  return (unsigned long) atomicMin(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
 }
 
 /******************************************************************************
@@ -201,6 +214,7 @@ struct ExtractBinOp
   {
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
+
     if constexpr (FLIP)
     {
       bits = ~bits;
@@ -283,7 +297,8 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT,
           typename NumItemsT,
-          bool SELECT_MIN>
+          bool SELECT_MIN,
+          bool IS_STABLE>
 struct AgentTopK
 {
   //---------------------------------------------------------------------
@@ -499,6 +514,7 @@ struct AgentTopK
             {
               pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
               d_keys_out[pos] = key;
+
               if constexpr (!KEYS_ONLY)
               {
                 index             = in_idx_buf ? in_idx_buf[i] : i;
@@ -627,12 +643,19 @@ struct AgentTopK
    *   Indicate which pass are processed currently
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilter(
-    KeyInT* in_buf, NumItemsT* in_idx_buf, Counter<KeyInT, NumItemsT>* counter, NumItemsT* histogram, int k, int pass)
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    NumItemsT* out_idx_buf,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int k,
+    int pass)
   {
-    const NumItemsT buf_len  = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
+
     load_from_original_input = counter->previous_len > buf_len;
     NumItemsT current_len    = load_from_original_input ? num_items : counter->previous_len;
-    in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
+    in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf;
 
     if (current_len == 0)
     {
@@ -644,39 +667,58 @@ struct AgentTopK
     NumItemsT* p_out_cnt        = &counter->out_cnt;
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
 
-    auto f = [this, pass, p_out_cnt, counter, in_idx_buf, p_out_back_cnt, num_of_kth_needed, k, current_len](
-               KeyInT key, NumItemsT i) {
-      int res = identify_candidates_op(key);
-      if (res < 0)
-      {
-        NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-        d_keys_out[pos] = key;
-        if constexpr (!KEYS_ONLY)
-        {
-          NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
+    NumItemsT* p_equal = out_idx_buf + k - num_of_kth_needed;
+    cuda::atomic_ref<NumItemsT> ref_last(p_equal[num_of_kth_needed - 1]);
 
-          // For one-block version, `in_idx_buf` could be nullptr at pass 0.
-          // For non one-block version, if writing has been skipped, `in_idx_buf` could
-          // be nullptr if `in_buf` is `in`
-          d_values_out[pos] = d_values_in[index];
-        }
-      }
-      else if (res == 0)
-      {
-        NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
-        NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
-
-        if (back_pos < num_of_kth_needed)
+    auto f =
+      [this, pass, p_out_cnt, counter, in_idx_buf, p_out_back_cnt, num_of_kth_needed, k, current_len, ref_last, p_equal](
+        KeyInT key, NumItemsT i) {
+        int res = identify_candidates_op(key);
+        if (res < 0)
         {
-          NumItemsT pos   = k - 1 - back_pos;
+          NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
           d_keys_out[pos] = key;
           if constexpr (!KEYS_ONLY)
           {
-            d_values_out[pos] = d_values_in[new_idx];
+            NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
+
+            // For one-block version, `in_idx_buf` could be nullptr at pass 0.
+            // For non one-block version, if writing has been skipped, `in_idx_buf` could
+            // be nullptr if `in_buf` is `in`
+            d_values_out[pos] = d_values_in[index];
           }
         }
-      }
-    };
+        else if (res == 0)
+        {
+          NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
+          NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
+
+          if (back_pos < num_of_kth_needed)
+          {
+            NumItemsT pos   = k - 1 - back_pos;
+            d_keys_out[pos] = key;
+
+            if constexpr (!KEYS_ONLY && (!IS_STABLE))
+            {
+              d_values_out[pos] = d_values_in[new_idx];
+            }
+          }
+          if constexpr (!KEYS_ONLY && IS_STABLE)
+          {
+            if (new_idx < ref_last.load(cuda::memory_order_relaxed))
+            {
+              for (int j = 0; j < num_of_kth_needed; j++)
+              {
+                NumItemsT pre_idx = atomicMin(&p_equal[j], new_idx);
+                if (pre_idx > new_idx)
+                {
+                  new_idx = pre_idx;
+                }
+              }
+            }
+          }
+        }
+      };
 
     if (load_from_original_input)
     {
@@ -685,6 +727,29 @@ struct AgentTopK
     else
     {
       ConsumeRange(in_buf, current_len, f);
+    }
+
+    __threadfence();
+    __syncthreads();
+
+    bool is_last_block = false;
+    if (threadIdx.x == 0)
+    {
+      unsigned int finished = atomicInc(&counter->finished_block_cnt, gridDim.x - 1);
+      is_last_block         = (finished == (gridDim.x - 1));
+    }
+
+    if (__syncthreads_or(is_last_block))
+    {
+      // Store the final value
+      if constexpr (!KEYS_ONLY && IS_STABLE)
+      {
+        for (int j = threadIdx.x; j < num_of_kth_needed; j += static_cast<size_t>(blockDim.x))
+        {
+          NumItemsT index                         = p_equal[j];
+          d_values_out[k - num_of_kth_needed + j] = d_values_in[index];
+        }
+      }
     }
   }
 
@@ -719,6 +784,7 @@ struct AgentTopK
     NumItemsT* in_idx_buf,
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
+    NumItemsT* lastpass_idx_buf,
     Counter<KeyInT, NumItemsT>* counter,
     NumItemsT* histogram,
     int pass)
@@ -815,6 +881,18 @@ struct AgentTopK
         for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
         {
           histogram[i] = 0;
+        }
+      }
+
+      if (pass == num_passes - 1)
+      {
+        if constexpr (!KEYS_ONLY && IS_STABLE)
+        {
+          volatile const NumItemsT num_of_kth_needed = counter->k;
+          for (NumItemsT i = threadIdx.x; i < num_of_kth_needed; i += blockDim.x)
+          {
+            lastpass_idx_buf[k - num_of_kth_needed + i] = cuda::std::numeric_limits<NumItemsT>::max();
+          }
         }
       }
     }

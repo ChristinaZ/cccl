@@ -193,7 +193,8 @@ template <typename ChainedPolicyT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT,
           bool SelectMin,
-          bool IsFirstPass>
+          bool IsFirstPass,
+          bool IsStable>
 __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
   CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
     const KeyInputIteratorT d_keys_in,
@@ -204,6 +205,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     NumItemsT* in_idx_buf,
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
+    NumItemsT* lastpass_idx_buf,
     Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
@@ -222,13 +224,14 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
               ExtractBinOpT,
               IdentifyCandidatesOpT,
               NumItemsT,
-              SelectMin>;
+              SelectMin,
+              IsStable>;
 
   // Shared memory storage
   __shared__ typename AgentTopKT::TempStorage temp_storage;
   AgentTopKT(
     temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, identify_candidates_op)
-    .InvokeOneSweep<IsFirstPass>(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
+    .InvokeOneSweep<IsFirstPass>(in_buf, in_idx_buf, out_buf, out_idx_buf, lastpass_idx_buf, counter, histogram, pass);
 }
 
 /**
@@ -303,7 +306,8 @@ template <typename ChainedPolicyT,
           typename NumItemsT,
           typename KeyInT,
           typename IdentifyCandidatesOpT,
-          bool SelectMin>
+          bool SelectMin,
+          bool IsStable>
 __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
   CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKLastFilterKernel(
     const KeyInputIteratorT d_keys_in,
@@ -312,6 +316,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     ValueOutputIteratorT d_values_out,
     KeyInT* in_buf,
     NumItemsT* in_idx_buf,
+    NumItemsT* out_idx_buf,
     Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
@@ -330,13 +335,14 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
               ExtractBinOpT, // ExtractBinOp operator (not used)
               IdentifyCandidatesOpT,
               NumItemsT,
-              SelectMin>;
+              SelectMin,
+              IsStable>;
 
   // Shared memory storage
   __shared__ typename AgentTopKT::TempStorage temp_storage;
   AgentTopKT(
     temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, ExtractBinOpT{}, identify_candidates_op)
-    .InvokeLastFilter(in_buf, in_idx_buf, counter, histogram, k, pass);
+    .InvokeLastFilter(in_buf, in_idx_buf, out_idx_buf, counter, histogram, k, pass);
 }
 
 /*
@@ -394,6 +400,7 @@ template <typename KeyInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
           bool SelectMin,
+          bool IsStable,
           typename SelectedPolicy = device_topk_policy_hub<detail::it_value_t<KeyInputIteratorT>, NumItemsT>>
 struct DispatchTopK : SelectedPolicy
 {
@@ -624,12 +631,13 @@ struct DispatchTopK : SelectedPolicy
       Counter<KeyInT, NumItemsT>* counter;
       counter = static_cast<decltype(counter)>(allocations[0]);
       NumItemsT* histogram;
-      histogram              = static_cast<decltype(histogram)>(allocations[1]);
-      KeyInT* in_buf         = nullptr;
-      KeyInT* out_buf        = nullptr;
-      NumItemsT* in_idx_buf  = nullptr;
-      NumItemsT* out_idx_buf = nullptr;
-      int pass               = 0;
+      histogram                   = static_cast<decltype(histogram)>(allocations[1]);
+      KeyInT* in_buf              = nullptr;
+      KeyInT* out_buf             = nullptr;
+      NumItemsT* in_idx_buf       = nullptr;
+      NumItemsT* out_idx_buf      = nullptr;
+      NumItemsT* lastpass_idx_buf = nullptr;
+      int pass                    = 0;
       for (; pass < num_passes; pass++)
       {
         // Set operator
@@ -644,6 +652,7 @@ struct DispatchTopK : SelectedPolicy
         {
           in_idx_buf  = pass <= 1 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
           out_idx_buf = pass == 0 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
+          lastpass_idx_buf = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
         }
 
         // Invoke kernel
@@ -667,6 +676,7 @@ struct DispatchTopK : SelectedPolicy
               in_idx_buf,
               out_buf,
               out_idx_buf,
+              lastpass_idx_buf,
               counter,
               histogram,
               num_items,
@@ -688,6 +698,7 @@ struct DispatchTopK : SelectedPolicy
               in_idx_buf,
               out_buf,
               out_idx_buf,
+              lastpass_idx_buf,
               counter,
               histogram,
               num_items,
@@ -711,6 +722,7 @@ struct DispatchTopK : SelectedPolicy
               d_values_out,
               out_buf,
               out_idx_buf,
+              lastpass_idx_buf,
               counter,
               histogram,
               num_items,
@@ -736,7 +748,8 @@ struct DispatchTopK : SelectedPolicy
                        ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
-                       /*IsFirstPass*/ true>,
+                       /*IsFirstPass*/ true,
+                       IsStable>,
 
       DeviceTopKKernel<MaxPolicyT,
                        KeyInputIteratorT,
@@ -748,17 +761,20 @@ struct DispatchTopK : SelectedPolicy
                        ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
-                       /*IsFirstPass*/ false>,
+                       /*IsFirstPass*/ false,
+                       IsStable>,
 
-      DeviceTopKLastFilterKernel<MaxPolicyT,
-                                 KeyInputIteratorT,
-                                 KeyOutputIteratorT,
-                                 ValueInputIteratorT,
-                                 ValueOutputIteratorT,
-                                 NumItemsT,
-                                 KeyInT,
-                                 IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                                 SelectMin>);
+      DeviceTopKLastFilterKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KeyInT,
+        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin,
+        IsStable>);
   }
 
   /*
