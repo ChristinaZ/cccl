@@ -51,9 +51,8 @@ struct sm90_tuning
 {
   static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
 
-  using WideT                                      = float4;
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items_per_scaler            = CUB_MAX(sizeof(WideT) / sizeof(KeyInT), 1);
+  static constexpr int items_per_scaler            = CUB_MAX(4/ sizeof(KeyInT), 1);
   static constexpr int items                       = items_per_scaler * nominal_4b_items_per_thread;
 
   static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
@@ -113,83 +112,6 @@ struct device_topk_policy_hub
  * Kernel entry points
  *****************************************************************************/
 
-/**
- * TopK kernel entry point (multi-block)
- *
- * Find the largest (or smallest) K items from a sequence of unordered data
- * @tparam KeyInputIteratorT
- *   **[inferred]** Random-access input iterator type for reading input keys @iterator
- *
- * @tparam KeyOutputIteratorT
- *   **[inferred]** Random-access output iterator type for writing output keys @iterator
- *
- * @tparam ValueInputIteratorT
- *   **[inferred]** Random-access input iterator type for reading input values @iterator
- *
- * @tparam ValueOutputIteratorT
- *   **[inferred]** Random-access input iterator type for writing output values @iterator
- *
- * @tparam NumItemsT
- *  Type of variable num_items and k
- *
- * @tparam ExtractBinOpT
- *   Operations to extract the bin from the input key value
- *
- * @tparam FilterOpT
- *   Operations to filter the input key value
- *
- * @tparam SelectMin
- *   Indicate find the smallest (SelectMin=true) or largest (SelectMin=false) K elements
- *
- * @tparam IncludeLastFilter
- *   Indicate whether include the last filter operation or not
- *
- * @param[in] d_keys_in
- *   Pointer to the input data of key data
- *
- * @param[out] d_keys_out
- *   Pointer to the K output sequence of key data
- *
- * @param[in] d_values_in
- *   Pointer to the corresponding input sequence of associated value items
- *
- * @param[out] d_values_out
- *   Pointer to the correspondingly output sequence of associated
- *   value items
- *
- * @param[in] in_buf
- *   Pointer to buffer of input key data
- *
- * @param[out] out_buf
- *   Pointer to buffer of output key data
- *
- * @param[in] in_idx_buf
- *   Pointer to buffer of index of input buffer
- *
- * @param[out] out_idx_buf
- *   Pointer to buffer of index of output
- *
- * @param[in] counter
- *   Pointer to buffer of counter array
- *
- * @param[in] histogram
- *   Pointer to buffer of histogram array
- *
- * @param[in] num_items
- *   Number of items to be processed
- *
- * @param[in] k
- *   The K value. Will find K elements from num_items elements
- *
- * @param[in] extract_bin_op
- *   Extract the bin operator
- *
- * @param[in] filter_op
- *   Extract element filter operator
- *
- * @param[in] pass
- *   The index of the passes
- */
 template <typename ChainedPolicyT,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
@@ -202,7 +124,7 @@ template <typename ChainedPolicyT,
           bool SelectMin,
           bool IncludeLastFilter>
 __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
-  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
+  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKFilterKernel(
     const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
@@ -235,7 +157,150 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
   // Shared memory storage
   __shared__ typename AgentTopKT::TempStorage temp_storage;
   AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, filter_op)
-    .InvokeOneSweep(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
+    .InvokeFilterOperation(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
+}
+
+template <typename ChainedPolicyT,
+          typename KeyInputIteratorT,
+          typename KeyOutputIteratorT,
+          typename ValueInputIteratorT,
+          typename ValueOutputIteratorT,
+          typename NumItemsT,
+          typename KeyInT,
+          typename ExtractBinOpT,
+          typename FilterOpT,
+          bool SelectMin,
+          bool IncludeLastFilter>
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKFirstFilterKernel(
+    const KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    const ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    NumItemsT* histogram,
+    NumItemsT num_items,
+    NumItemsT k,
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op,
+    int pass)
+{
+  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
+  using AgentTopKT =
+    AgentTopK<AgentTopKPolicyT,
+              KeyInputIteratorT,
+              KeyOutputIteratorT,
+              ValueInputIteratorT,
+              ValueOutputIteratorT,
+              ExtractBinOpT,
+              FilterOpT,
+              NumItemsT,
+              SelectMin,
+              IncludeLastFilter>;
+
+  // Shared memory storage
+  __shared__ typename AgentTopKT::TempStorage temp_storage;
+  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, filter_op)
+    .InvokeFirstFilterOperation(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
+}
+template <typename ChainedPolicyT,
+          typename KeyInputIteratorT,
+          typename KeyOutputIteratorT,
+          typename ValueInputIteratorT,
+          typename ValueOutputIteratorT,
+          typename NumItemsT,
+          typename KeyInT,
+          typename ExtractBinOpT,
+          typename FilterOpT,
+          bool SelectMin,
+          bool IncludeLastFilter>
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKBucketKernel(
+    const KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    const ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    NumItemsT* histogram,
+    NumItemsT num_items,
+    NumItemsT k,
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op,
+    int pass)
+{
+  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
+  using AgentTopKT =
+    AgentTopK<AgentTopKPolicyT,
+              KeyInputIteratorT,
+              KeyOutputIteratorT,
+              ValueInputIteratorT,
+              ValueOutputIteratorT,
+              ExtractBinOpT,
+              FilterOpT,
+              NumItemsT,
+              SelectMin,
+              IncludeLastFilter>;
+
+  // Shared memory storage
+  __shared__ typename AgentTopKT::TempStorage temp_storage;
+  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, filter_op)
+    .InvokeBucketOperation(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
+}
+
+template <typename ChainedPolicyT,
+          typename KeyInputIteratorT,
+          typename KeyOutputIteratorT,
+          typename ValueInputIteratorT,
+          typename ValueOutputIteratorT,
+          typename NumItemsT,
+          typename KeyInT,
+          typename ExtractBinOpT,
+          typename FilterOpT,
+          bool SelectMin,
+          bool IncludeLastFilter>
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKLastFilterKernel(
+    const KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    const ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    NumItemsT* histogram,
+    NumItemsT num_items,
+    NumItemsT k,
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op,
+    int pass)
+{
+  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
+  using AgentTopKT =
+    AgentTopK<AgentTopKPolicyT,
+              KeyInputIteratorT,
+              KeyOutputIteratorT,
+              ValueInputIteratorT,
+              ValueOutputIteratorT,
+              ExtractBinOpT,
+              FilterOpT,
+              NumItemsT,
+              SelectMin,
+              IncludeLastFilter>;
+
+  // Shared memory storage
+  __shared__ typename AgentTopKT::TempStorage temp_storage;
+  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, filter_op)
+    .InvokeLastFilterOperation(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
 
 /*
@@ -386,9 +451,16 @@ struct DispatchTopK : SelectedPolicy
   /******************************************************************************
    * Dispatch entrypoints
    ******************************************************************************/
-  template <typename ActivePolicyT, typename TopKOneSweepKernelPtrT, typename TopKLastPassKernelPtrT>
-  CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t
-  Invoke(TopKOneSweepKernelPtrT topk_onesweep_kernel, TopKLastPassKernelPtrT topk_lastpass_kernel)
+  template <typename ActivePolicyT,
+            typename TopKFirstFilterKernelPtrT,
+            typename TopKFilterKernelPtrT,
+            typename TopKBucketKernelPtrT,
+            typename TopKLastFilterKernelPtrT>
+  CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t Invoke(
+    TopKFirstFilterKernelPtrT topk_filter_firstpass_kernel,
+    TopKFilterKernelPtrT topk_filter_kernel,
+    TopKBucketKernelPtrT topk_bucket_kernel,
+    TopKLastFilterKernelPtrT topk_lastfilter_kernel)
   {
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
     using Policy     = typename ActivePolicyT::TopKPolicyT;
@@ -462,19 +534,6 @@ struct DispatchTopK : SelectedPolicy
         break;
       }
 
-      int topk_blocks_per_sm = 1;
-      error                  = CubDebug(
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&topk_blocks_per_sm, topk_onesweep_kernel, block_threads, 0));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-      dim3 topk_grid_size;
-      topk_grid_size.z = 1;
-      topk_grid_size.y = 1;
-      topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
-                                 (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
-
       // Initialize address variables
       Counter<KeyInT, NumItemsT>* counter;
       counter = static_cast<decltype(counter)>(allocations[0]);
@@ -522,11 +581,25 @@ struct DispatchTopK : SelectedPolicy
         }
 
         // Invoke kernel
-        if (pass < num_passes - 1)
+        /// Filter kernel
+        if (pass == 0)
         {
+          int topk_blocks_per_sm = 1;
+          error                  = CubDebug(
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&topk_blocks_per_sm, topk_filter_firstpass_kernel, block_threads, 0));
+          if (cudaSuccess != error)
+          {
+            break;
+          }
+          dim3 topk_grid_size;
+          topk_grid_size.z = 1;
+          topk_grid_size.y = 1;
+          topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
+                                     (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+
           THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
             .doit(
-              topk_onesweep_kernel,
+              topk_filter_firstpass_kernel,
               d_keys_in,
               d_keys_out,
               d_values_in,
@@ -545,9 +618,78 @@ struct DispatchTopK : SelectedPolicy
         }
         else
         {
+          int topk_blocks_per_sm = 1;
+          error                  = CubDebug(
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&topk_blocks_per_sm, topk_filter_kernel, block_threads, 0));
+          if (cudaSuccess != error)
+          {
+            break;
+          }
+          dim3 topk_grid_size;
+          topk_grid_size.z = 1;
+          topk_grid_size.y = 1;
+          topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
+                                     (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+
           THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
             .doit(
-              topk_lastpass_kernel,
+              topk_filter_kernel,
+              d_keys_in,
+              d_keys_out,
+              d_values_in,
+              d_values_out,
+              in_buf,
+              in_idx_buf,
+              out_buf,
+              out_idx_buf,
+              counter,
+              histogram,
+              num_items,
+              k,
+              extract_bin_op,
+              filter_op,
+              pass);
+        }
+
+        /// Choose bucket
+        THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(1, block_threads, 0, stream)
+          .doit(
+            topk_bucket_kernel,
+            d_keys_in,
+            d_keys_out,
+            d_values_in,
+            d_values_out,
+            in_buf,
+            in_idx_buf,
+            out_buf,
+            out_idx_buf,
+            counter,
+            histogram,
+            num_items,
+            k,
+            extract_bin_op,
+            filter_op,
+            pass);
+
+        /// Last filter
+        if (pass == num_passes - 1)
+        {
+          int topk_blocks_per_sm = 1;
+          error                  = CubDebug(
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&topk_blocks_per_sm, topk_lastfilter_kernel, block_threads, 0));
+          if (cudaSuccess != error)
+          {
+            break;
+          }
+          dim3 topk_grid_size;
+          topk_grid_size.z = 1;
+          topk_grid_size.y = 1;
+          topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
+                                     (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+
+          THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
+            .doit(
+              topk_lastfilter_kernel,
               d_keys_in,
               d_keys_out,
               d_values_in,
@@ -573,28 +715,54 @@ struct DispatchTopK : SelectedPolicy
   {
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
     return Invoke<ActivePolicyT>(
-      DeviceTopKKernel<MaxPolicyT,
-                       KeyInputIteratorT,
-                       KeyOutputIteratorT,
-                       ValueInputIteratorT,
-                       ValueOutputIteratorT,
-                       NumItemsT,
-                       KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       SelectMin,
-                       false>,
-      DeviceTopKKernel<MaxPolicyT,
-                       KeyInputIteratorT,
-                       KeyOutputIteratorT,
-                       ValueInputIteratorT,
-                       ValueOutputIteratorT,
-                       NumItemsT,
-                       KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       SelectMin,
-                       true>);
+      DeviceTopKFirstFilterKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KeyInT,
+        ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin,
+        false>,
+      DeviceTopKFilterKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KeyInT,
+        ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin,
+        false>,
+      DeviceTopKBucketKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KeyInT,
+        ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin,
+        false>,
+      DeviceTopKLastFilterKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KeyInT,
+        ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin,
+        false>);
   }
 
   /*

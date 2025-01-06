@@ -29,7 +29,7 @@
 #include <iterator>
 
 CUB_NAMESPACE_BEGIN
-#define USE_CUSTOMIZED_LOAD
+//#define USE_CUSTOMIZED_LOAD
 
 //  Overload CUDA atomic for other 64bit unsigned/signed integer type
 using ::atomicAdd;
@@ -460,13 +460,13 @@ struct AgentTopK
   template <typename Func>
   _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(const KeyInputIteratorT in, const NumItemsT num_items, Func f)
   {
-    KeyInT thread_data[ITEMS_PER_THREAD];
-
-    NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
+    const NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
     NumItemsT tile_base      = blockIdx.x * TILE_ITEMS;
     // Remaining items (including this tile)
     NumItemsT num_remaining_per_tile = num_items > tile_base ? num_items - tile_base : 0;
     NumItemsT num_remaining_per_pass = num_items;
+
+    KeyInT thread_data[ITEMS_PER_THREAD];
 
     while (num_remaining_per_pass > 0)
     {
@@ -518,15 +518,67 @@ struct AgentTopK
     }
     CTA_SYNC();
 
-    if (pass == 0)
+    NumItemsT* p_filter_cnt = &counter->filter_cnt;
+    NumItemsT* p_out_cnt    = &counter->out_cnt;
+    const auto kth_key_bits = counter->kth_key_bits;
+
+    // See the remark above on the distributed execution of `f` using
+    // VectorizedProcess.
+    auto f = [in_idx_buf, out_buf, out_idx_buf, kth_key_bits, counter, p_filter_cnt, p_out_cnt, this, early_stop, pass](
+               KeyInT key, NumItemsT i) {
+      int pre_res = filter_op(key, pass - 1, kth_key_bits);
+
+      if (pre_res == 0)
+      {
+        NumItemsT index;
+        NumItemsT pos;
+        if (early_stop)
+        {
+          pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+          d_keys_out[pos] = key;
+          _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+          {
+            index             = in_idx_buf ? in_idx_buf[i] : i;
+            d_values_out[pos] = d_values_in[index];
+          }
+        }
+        else
+        {
+          if (out_buf)
+          {
+            pos          = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
+            out_buf[pos] = key;
+            _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+            {
+              index            = in_idx_buf ? in_idx_buf[i] : i;
+              out_idx_buf[pos] = index;
+            }
+          }
+
+          int bucket = extract_bin_op(key, pass);
+          atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
+        }
+      }
+      // the condition `(out_buf || early_stop)` is a little tricky:
+      // If we skip writing to `out_buf` (when `out_buf` is nullptr), we should skip
+      // writing to `out` too. So we won't write the same key to `out` multiple
+      // times in different passes. And if we keep skipping the writing, keys will
+      // be written in `LastFilter_kernel()` at last. But when `early_stop` is
+      // true, we need to write to `out` since it's the last chance.
+      else if ((out_buf || early_stop) && (pre_res < 0))
+      {
+        NumItemsT index;
+        NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+        d_keys_out[pos] = key;
+        _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+        {
+          index             = in_idx_buf ? in_idx_buf[i] : i;
+          d_values_out[pos] = d_values_in[index];
+        }
+      }
+    };
+    if (load_from_original_input)
     {
-      // Passed to VectorizedProcess, this function executes in all blocks in parallel,
-      // i.e. the work is split along the input (both, in batches and chunks of a single
-      // row). Later, the histograms are merged using atomicAdd.
-      auto f = [this](KeyInT key, NumItemsT index) {
-        int bucket = extract_bin_op(key, /*pass*/ 0);
-        atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
-      };
 #ifdef USE_CUSTOMIZED_LOAD
       VectorizedProcess(
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
@@ -540,91 +592,69 @@ struct AgentTopK
     }
     else
     {
-      NumItemsT* p_filter_cnt = &counter->filter_cnt;
-      NumItemsT* p_out_cnt    = &counter->out_cnt;
-      const auto kth_key_bits = counter->kth_key_bits;
-
-      // See the remark above on the distributed execution of `f` using
-      // VectorizedProcess.
-      auto f =
-        [in_idx_buf, out_buf, out_idx_buf, kth_key_bits, counter, p_filter_cnt, p_out_cnt, this, early_stop, pass](
-          KeyInT key, NumItemsT i) {
-          int pre_res = filter_op(key, pass - 1, kth_key_bits);
-          if (pre_res == 0)
-          {
-            NumItemsT index;
-            NumItemsT pos;
-            if (early_stop)
-            {
-              pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-              d_keys_out[pos] = key;
-              _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
-              {
-                index             = in_idx_buf ? in_idx_buf[i] : i;
-                d_values_out[pos] = d_values_in[index];
-              }
-            }
-            else
-            {
-              if (out_buf)
-              {
-                pos          = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
-                out_buf[pos] = key;
-                _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
-                {
-                  index            = in_idx_buf ? in_idx_buf[i] : i;
-                  out_idx_buf[pos] = index;
-                }
-              }
-
-              int bucket = extract_bin_op(key, pass);
-              atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
-            }
-          }
-          // the condition `(out_buf || early_stop)` is a little tricky:
-          // If we skip writing to `out_buf` (when `out_buf` is nullptr), we should skip
-          // writing to `out` too. So we won't write the same key to `out` multiple
-          // times in different passes. And if we keep skipping the writing, keys will
-          // be written in `LastFilter_kernel()` at last. But when `early_stop` is
-          // true, we need to write to `out` since it's the last chance.
-          else if ((out_buf || early_stop) && (pre_res < 0))
-          {
-            NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-            d_keys_out[pos] = key;
-            _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
-            {
-              NumItemsT index   = in_idx_buf ? in_idx_buf[i] : i;
-              d_values_out[pos] = d_values_in[index];
-            }
-          }
-        };
-      if (load_from_original_input)
-      {
 #ifdef USE_CUSTOMIZED_LOAD
-        VectorizedProcess(
-          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-          static_cast<size_t>(blockDim.x) * gridDim.x,
-          d_keys_in,
-          previous_len,
-          f);
+      VectorizedProcess(
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+        static_cast<size_t>(blockDim.x) * gridDim.x,
+        in_buf,
+        previous_len,
+        f);
 #else
-        ConsumeRange(d_keys_in, previous_len, f);
+      ConsumeRange(in_buf, previous_len, f);
 #endif
-      }
-      else
+    }
+
+    if (early_stop)
+    {
+      return;
+    }
+    CTA_SYNC();
+
+    // merge histograms produced by individual blocks
+    for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
+    {
+      if (histogram_smem[i] != 0)
       {
-#ifdef USE_CUSTOMIZED_LOAD
-        VectorizedProcess(
-          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-          static_cast<size_t>(blockDim.x) * gridDim.x,
-          in_buf,
-          previous_len,
-          f);
-#else
-        ConsumeRange(in_buf, previous_len, f);
-#endif
+        atomicAdd(histogram + i, histogram_smem[i]);
       }
     }
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogramFirstPass(
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    NumItemsT previous_len,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int pass,
+    bool early_stop)
+  {
+    __shared__ NumItemsT histogram_smem[num_buckets];
+    for (NumItemsT i = threadIdx.x; i < num_buckets; i += blockDim.x)
+    {
+      histogram_smem[i] = 0;
+    }
+    CTA_SYNC();
+
+    // Passed to VectorizedProcess, this function executes in all blocks in parallel,
+    // i.e. the work is split along the input (both, in batches and chunks of a single
+    // row). Later, the histograms are merged using atomicAdd.
+    auto f = [this](KeyInT key, NumItemsT index) {
+      int bucket = extract_bin_op(key, /*pass*/ 0);
+      atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
+    };
+#ifdef USE_CUSTOMIZED_LOAD
+    VectorizedProcess(
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+      static_cast<size_t>(blockDim.x) * gridDim.x,
+      d_keys_in,
+      previous_len,
+      f);
+#else
+    ConsumeRange(d_keys_in, previous_len, f);
+#endif
 
     if (early_stop)
     {
@@ -701,43 +731,344 @@ struct AgentTopK
     NumItemsT num_of_kth_needed = counter->k;
     NumItemsT* p_out_cnt        = &counter->out_cnt;
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
-    for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
-    {
-      const KeyInT key = load_from_original_input ? d_keys_in[i] : in_buf[i];
 
-      int res = filter_op(key, pass, kth_key_bits);
-      if (res < 0)
-      {
-        NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-        d_keys_out[pos] = key;
-        _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+    auto f =
+      [this, 
+       pass,
+       kth_key_bits,
+       p_out_cnt,
+       counter,
+       in_idx_buf,
+       p_out_back_cnt,
+       num_of_kth_needed, k, current_len](KeyInT key, NumItemsT i) {
+        int res = filter_op(key, pass, kth_key_bits);
+        if (res < 0)
         {
-          NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
-
-          // For one-block version, `in_idx_buf` could be nullptr at pass 0.
-          // For non one-block version, if writing has been skipped, `in_idx_buf` could
-          // be nullptr if `in_buf` is `in`
-          d_values_out[pos] = d_values_in[index];
-        }
-      }
-      else if (res == 0)
-      {
-        NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
-        NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
-
-        if (back_pos < num_of_kth_needed)
-        {
-          NumItemsT pos   = k - 1 - back_pos;
+          NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
           d_keys_out[pos] = key;
           _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
           {
-            d_values_out[pos] = d_values_in[new_idx];
+            NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
+
+            // For one-block version, `in_idx_buf` could be nullptr at pass 0.
+            // For non one-block version, if writing has been skipped, `in_idx_buf` could
+            // be nullptr if `in_buf` is `in`
+            d_values_out[pos] = d_values_in[index];
           }
         }
+        else if (res == 0)
+        {
+          NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
+          NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
+
+          if (back_pos < num_of_kth_needed)
+          {
+            NumItemsT pos   = k - 1 - back_pos;
+            d_keys_out[pos] = key;
+            _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+            {
+              d_values_out[pos] = d_values_in[new_idx];
+            }
+          }
+        }
+      };
+
+    if(load_from_original_input)
+    {
+#ifdef USE_CUSTOMIZED_LOAD
+      VectorizedProcess(
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+        static_cast<size_t>(blockDim.x) * gridDim.x,
+        d_keys_in,
+        current_len,
+        f);
+#else
+      ConsumeRange(d_keys_in, current_len, f);
+#endif
+    }
+    else
+    {
+#ifdef USE_CUSTOMIZED_LOAD
+      VectorizedProcess(
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+        static_cast<size_t>(blockDim.x) * gridDim.x,
+        in_buf,
+        current_len,
+        f);
+#else
+      ConsumeRange(in_buf, current_len, f);
+#endif
+    }
+
+    // for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
+    // {
+    //   const KeyInT key = load_from_original_input ? d_keys_in[i] : in_buf[i];
+    //    f(in[i], i);
+    // }
+  }
+
+  /**
+   * @brief Seperate the kernels into two kernels
+   *
+   * @param in_buf
+   *   Buffer address for input data
+   *
+   * @param in_idx_buf
+   *   Buffer address for index of the input data
+   *
+   * @param out_buf
+   *   Buffer address for output data
+   *
+   * @param out_idx_buf
+   *   Buffer address for index of the output data
+   *
+   * @param counter
+   *   Record the meta data for different passes
+   *
+   * @param histogram
+   *   Record the element number of each bucket
+   *
+   * @param pass
+   *   Indicate which pass are processed currently
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeFilterOperation(
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int pass)
+  {
+    NumItemsT current_k;
+    NumItemsT previous_len;
+    NumItemsT current_len;
+
+    if (pass == 0)
+    {
+      current_k    = k;
+      previous_len = num_items;
+      current_len  = num_items;
+    }
+    else
+    {
+      current_k    = counter->k;
+      current_len  = counter->len;
+      previous_len = counter->previous_len;
+    }
+
+    if (current_len == 0)
+    {
+      return;
+    }
+
+    const bool early_stop   = (current_len == current_k);
+    const NumItemsT buf_len = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+
+    if (previous_len > buf_len)
+    {
+      load_from_original_input = true;
+      in_idx_buf               = nullptr;
+      previous_len             = num_items;
+    }
+    else
+    {
+      load_from_original_input = false;
+    }
+
+    // "current_len > buf_len" means current pass will skip writing buffer
+    if (current_len > buf_len)
+    {
+      out_buf     = nullptr;
+      out_idx_buf = nullptr;
+    }
+
+    FilterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeFirstFilterOperation(
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int pass)
+  {
+    NumItemsT current_k;
+    NumItemsT previous_len;
+    NumItemsT current_len;
+
+    if (pass == 0)
+    {
+      current_k    = k;
+      previous_len = num_items;
+      current_len  = num_items;
+    }
+    else
+    {
+      current_k    = counter->k;
+      current_len  = counter->len;
+      previous_len = counter->previous_len;
+    }
+
+    if (current_len == 0)
+    {
+      return;
+    }
+
+    const bool early_stop   = (current_len == current_k);
+    const NumItemsT buf_len = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+
+    if (previous_len > buf_len)
+    {
+      load_from_original_input = true;
+      in_idx_buf               = nullptr;
+      previous_len             = num_items;
+    }
+    else
+    {
+      load_from_original_input = false;
+    }
+
+    // "current_len > buf_len" means current pass will skip writing buffer
+    if (current_len > buf_len)
+    {
+      out_buf     = nullptr;
+      out_idx_buf = nullptr;
+    }
+
+    FilterAndHistogramFirstPass(
+      in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+  }
+
+  /**
+   * @brief Seperate the kernels into two kernels
+   *
+   * @param in_buf
+   *   Buffer address for input data
+   *
+   * @param in_idx_buf
+   *   Buffer address for index of the input data
+   *
+   * @param out_buf
+   *   Buffer address for output data
+   *
+   * @param out_idx_buf
+   *   Buffer address for index of the output data
+   *
+   * @param counter
+   *   Record the meta data for different passes
+   *
+   * @param histogram
+   *   Record the element number of each bucket
+   *
+   * @param pass
+   *   Indicate which pass are processed currently
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeBucketOperation(
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int pass)
+  {
+    NumItemsT current_k;
+    NumItemsT previous_len;
+    NumItemsT current_len;
+
+    if (pass == 0)
+    {
+      current_k    = k;
+      previous_len = num_items;
+      current_len  = num_items;
+    }
+    else
+    {
+      current_k    = counter->k;
+      current_len  = counter->len;
+      previous_len = counter->previous_len;
+    }
+
+    if (current_len == current_k)
+    {
+      if (threadIdx.x == 0)
+      {
+        // `LastFilter_kernel()` requires setting previous_len
+        counter->previous_len = 0;
+        counter->len          = 0;
       }
+      return;
+    }
+
+    Scan(histogram);
+
+    CTA_SYNC();
+    ChooseBucket(counter, histogram, current_k, pass);
+    CTA_SYNC();
+
+    int num_passes = CalcNumPasses<KeyInT, BITS_PER_PASS>();
+    // reset for next pass
+    if (pass != num_passes - 1)
+    {
+      for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
+      {
+        histogram[i] = 0;
+      }
+    }
+    if (threadIdx.x == 0)
+    {
+      // `LastFilter_kernel()` requires setting previous_len even in the last pass
+      counter->previous_len = current_len;
+      // not necessary for the last pass, but put it here anyway
+      counter->filter_cnt = 0;
     }
   }
 
+  /**
+   * @brief Seperate the kernels into two kernels
+   *
+   * @param in_buf
+   *   Buffer address for input data
+   *
+   * @param in_idx_buf
+   *   Buffer address for index of the input data
+   *
+   * @param out_buf
+   *   Buffer address for output data
+   *
+   * @param out_idx_buf
+   *   Buffer address for index of the output data
+   *
+   * @param counter
+   *   Record the meta data for different passes
+   *
+   * @param histogram
+   *   Record the element number of each bucket
+   *
+   * @param pass
+   *   Indicate which pass are processed currently
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilterOperation(
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<KeyInT, NumItemsT>* counter,
+    NumItemsT* histogram,
+    int pass)
+  {
+    const NumItemsT buf_len = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+    if (counter->previous_len > buf_len)
+    {
+      out_buf     = nullptr;
+      out_idx_buf = nullptr;
+    }
+    load_from_original_input = out_buf ? false : true;
+    LastFilter(out_buf, out_idx_buf ? out_idx_buf : in_idx_buf, out_buf ? counter->previous_len : num_items, k, counter, pass);
+  }
   /**
    * @brief One sweep topK (specialized for topK operator)
    *
@@ -814,7 +1145,16 @@ struct AgentTopK
       out_idx_buf = nullptr;
     }
 
-    FilterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+    if (pass == 0)
+    {
+      FilterAndHistogramFirstPass(
+        in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+    }
+    else
+    {
+      FilterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+    }
+
     __threadfence();
 
     bool is_last_block = false;
@@ -862,7 +1202,7 @@ struct AgentTopK
 
       if (pass == num_passes - 1)
       {
-        volatile const NumItemsT num_of_kth_needed = counter->k;
+        // volatile const NumItemsT num_of_kth_needed = counter->k;//@TODO: need to remove the
         CTA_SYNC();
 
         _CCCL_IF_CONSTEXPR (INCLUDE_LAST_FILTER)
