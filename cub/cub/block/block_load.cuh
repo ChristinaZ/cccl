@@ -209,7 +209,8 @@ InternalLoadDirectBlockedVectorized(int linear_tid, const T* block_src_ptr, T (&
   using vector_t                   = typename CubVector<device_word_t, vector_size>::Type;
 
   // Load into an array of vectors in thread-blocked order
-  vector_t vec_items[vectors_per_thread];
+  // vector_t vec_items[vectors_per_thread];
+  vector_t* vec_items     = reinterpret_cast<vector_t*>(&(dst_items[0]));
   const vector_t* vec_ptr = reinterpret_cast<const vector_t*>(block_src_ptr) + linear_tid * vectors_per_thread;
 #  pragma unroll
   for (int i = 0; i < vectors_per_thread; i++)
@@ -217,12 +218,12 @@ InternalLoadDirectBlockedVectorized(int linear_tid, const T* block_src_ptr, T (&
     vec_items[i] = ThreadLoad<MODIFIER>(vec_ptr + i);
   }
 
-// Copy to destination
-#  pragma unroll
-  for (int i = 0; i < ITEMS_PER_THREAD; i++)
-  {
-    dst_items[i] = *(reinterpret_cast<T*>(vec_items) + i);
-  }
+  // Copy to destination
+  // #  pragma unroll
+  //   for (int i = 0; i < ITEMS_PER_THREAD; i++)
+  //   {
+  //     dst_items[i] = *(reinterpret_cast<T*>(vec_items) + i);
+  //   }
 }
 
 #endif // _CCCL_DOXYGEN_INVOKED
@@ -889,7 +890,16 @@ class BlockLoad
     template <typename RandomAccessIterator>
     _CCCL_DEVICE _CCCL_FORCEINLINE void Load(RandomAccessIterator block_src_it, T (&dst_items)[ITEMS_PER_THREAD])
     {
-      LoadDirectBlocked(linear_tid, block_src_it, dst_items);
+      bool is_same_type  = ::cuda::std::is_same<RandomAccessIterator, const T*>::value;
+      bool is_same_type2 = ::cuda::std::is_same<RandomAccessIterator, T*>::value;
+      if (is_same_type || is_same_type2)
+      {
+        InternalLoadDirectBlockedVectorized<LOAD_DEFAULT>(linear_tid, block_src_it, dst_items);
+      }
+      else
+      {
+        LoadDirectBlocked(linear_tid, block_src_it, dst_items);
+      }
     }
 
     // attempts vectorization (cache modified iterator)
