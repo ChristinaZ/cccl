@@ -18,7 +18,8 @@
 // %PARAM% TEST_LAUNCH lid 0:1:2
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairs, topk_pairs);
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairs, topk_min_pairs);
-
+DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairsStable, topk_pairs_stable);
+DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairsStable, topk_min_pairs_stable);
 /**
  * Custom comparator that compares a tuple type's first element using `operator <`.
  */
@@ -69,18 +70,11 @@ template <typename key_in_it, typename value_in_it, typename key_t, typename val
 bool check_results(
   key_in_it h_keys_in,
   value_in_it h_values_in,
-  c2h::device_vector<key_t>& keys_out,
-  c2h::device_vector<value_t>& values_out,
+  c2h::host_vector<key_t>& h_keys_out,
+  c2h::host_vector<value_t>& h_values_out,
   num_items_t num_items,
-  num_items_t k,
-  bool is_descending)
+  num_items_t k)
 {
-  // Since the results of API TopKMinPairs() and TopKPairs() are not-sorted
-  // We need to sort the results first.
-  c2h::host_vector<key_t> h_keys_out(keys_out);
-  c2h::host_vector<value_t> h_values_out(values_out);
-  sort_keys_and_values(h_keys_out, h_values_out, k, is_descending);
-
   // i for results from gpu (TopKMinPairs() and TopKPairs()); j for reference results
   num_items_t i = 0, j = 0;
   bool res = true;
@@ -140,35 +134,61 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   c2h::device_vector<key_t> keys_out(k);
 
   c2h::device_vector<value_t> values_in(num_items);
+  thrust::sequence(values_in.begin(), values_in.end());
   c2h::device_vector<value_t> values_out(k);
 
-  const int num_key_seeds   = 1;
-  const int num_value_seeds = 1;
+  const int num_key_seeds = 1;
   c2h::gen(C2H_SEED(num_key_seeds), keys_in);
-  c2h::gen(C2H_SEED(num_value_seeds), values_in);
 
   const bool select_min    = GENERATE(false, true);
   const bool is_descending = !select_min;
+  const bool is_stable     = GENERATE(false, true);
 
   // Run the device-wide API
   if (select_min)
   {
-    topk_min_pairs(
-      thrust::raw_pointer_cast(keys_in.data()),
-      thrust::raw_pointer_cast(keys_out.data()),
-      thrust::raw_pointer_cast(values_in.data()),
-      thrust::raw_pointer_cast(values_out.data()),
-      num_items,
-      k);
+    if (is_stable)
+    {
+      topk_min_pairs_stable(
+        thrust::raw_pointer_cast(keys_in.data()),
+        thrust::raw_pointer_cast(keys_out.data()),
+        thrust::raw_pointer_cast(values_in.data()),
+        thrust::raw_pointer_cast(values_out.data()),
+        num_items,
+        k);
+    }
+    else
+    {
+      topk_min_pairs(
+        thrust::raw_pointer_cast(keys_in.data()),
+        thrust::raw_pointer_cast(keys_out.data()),
+        thrust::raw_pointer_cast(values_in.data()),
+        thrust::raw_pointer_cast(values_out.data()),
+        num_items,
+        k);
+    }
   }
   else
   {
-    topk_pairs(thrust::raw_pointer_cast(keys_in.data()),
-               thrust::raw_pointer_cast(keys_out.data()),
-               thrust::raw_pointer_cast(values_in.data()),
-               thrust::raw_pointer_cast(values_out.data()),
-               num_items,
-               k);
+    if (is_stable)
+    {
+      topk_pairs_stable(
+        thrust::raw_pointer_cast(keys_in.data()),
+        thrust::raw_pointer_cast(keys_out.data()),
+        thrust::raw_pointer_cast(values_in.data()),
+        thrust::raw_pointer_cast(values_out.data()),
+        num_items,
+        k);
+    }
+    else
+    {
+      topk_pairs(thrust::raw_pointer_cast(keys_in.data()),
+                 thrust::raw_pointer_cast(keys_out.data()),
+                 thrust::raw_pointer_cast(values_in.data()),
+                 thrust::raw_pointer_cast(values_out.data()),
+                 num_items,
+                 k);
+    }
   }
 
   // Sort the entire input data as result reference
@@ -176,15 +196,28 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   c2h::host_vector<value_t> h_values_in(values_in);
   sort_keys_and_values(h_keys_in, h_values_in, num_items, is_descending);
 
-  bool res = check_results(
-    thrust::raw_pointer_cast(h_keys_in.data()),
-    thrust::raw_pointer_cast(h_values_in.data()),
-    keys_out,
-    values_out,
-    num_items,
-    k,
-    is_descending);
+  // Since the results of API TopKMinPairs() and TopKPairs() are not-sorted
+  // We need to sort the results first.
+  c2h::host_vector<key_t> h_keys_out(keys_out);
+  c2h::host_vector<value_t> h_values_out(values_out);
+  sort_keys_and_values(h_keys_out, h_values_out, k, is_descending);
 
+  bool res = false;
+  if (is_stable)
+  {
+    res = thrust::equal(h_keys_out.begin(), h_keys_out.end(), h_keys_in.begin());
+    res = res & thrust::equal(h_values_out.begin(), h_values_out.end(), h_values_in.begin());
+  }
+  else
+  {
+    res = check_results(
+      thrust::raw_pointer_cast(h_keys_in.data()),
+      thrust::raw_pointer_cast(h_values_in.data()),
+      h_keys_out,
+      h_values_out,
+      num_items,
+      k);
+  }
   REQUIRE(res == true);
 }
 
@@ -234,17 +267,22 @@ C2H_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]",
 
   // Verify results
   bool res;
+
+  c2h::host_vector<key_t> h_keys_out(keys_out);
+  c2h::host_vector<value_t> h_values_out(values_out);
+  sort_keys_and_values(h_keys_out, h_values_out, k, is_descending);
+
   if (is_descending)
   {
     auto keys_expected_it   = thrust::make_reverse_iterator(keys_in + num_items);
     auto values_expected_it = thrust::make_reverse_iterator(values_in + num_items);
-    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+    res = check_results(keys_expected_it, values_expected_it, h_keys_out, h_values_out, num_items, k);
   }
   else
   {
     auto keys_expected_it   = keys_in;
     auto values_expected_it = values_in;
-    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+    res = check_results(keys_expected_it, values_expected_it, h_keys_out, h_values_out, num_items, k);
   }
 
   REQUIRE(res == true);
