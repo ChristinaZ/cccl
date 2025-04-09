@@ -15,7 +15,6 @@ struct policy_hub_t
   struct policy_t : cub::ChainedPolicy<300, policy_t, policy_t>
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
-
     static constexpr int ITEMS_PER_THREAD = cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
 
     static constexpr int BITS_PER_PASS          = cub::detail::topk::calc_bits_per_pass<KeyInT>();
@@ -42,15 +41,28 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT
   using value_output_it_t = ValueT*;
   using num_items_t       = NumItemT;
 
-  constexpr bool select_min = false;
-
+  constexpr bool select_min       = false;
+  constexpr bool is_deterministic = false;
 #if !TUNE_BASE
-  using policy_t   = policy_hub_t<KeyT, NumItemT>;
-  using dispatch_t = cub::
-    DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min, policy_t>;
-#else
+  using policy_t = policy_hub_t<KeyT, NumItemT>;
   using dispatch_t =
-    cub::DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min>;
+    cub::DispatchTopK<key_input_it_t,
+                      key_output_it_t,
+                      value_input_it_t,
+                      value_output_it_t,
+                      num_items_t,
+                      select_min,
+                      is_deterministic,
+                      policy_t>;
+#else // TUNE_BASE
+  using dispatch_t =
+    cub::DispatchTopK<key_input_it_t,
+                      key_output_it_t,
+                      value_input_it_t,
+                      value_output_it_t,
+                      num_items_t,
+                      select_min,
+                      is_deterministic>;
 #endif // TUNE_BASE
 
   // Retrieve axis parameters
