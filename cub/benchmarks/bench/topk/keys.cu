@@ -42,8 +42,8 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, NumItemT>)
   // using select_op_t        = less_then_t<T>;
   // using equality_op_t      = cub::NullType;
 
-  constexpr bool select_min = false;
-  constexpr bool is_stable  = false;
+  constexpr bool select_min       = false;
+  constexpr bool is_deterministic = false;
 #if !TUNE_BASE
   using policy_t = policy_hub_t<KeyT, NumItemT>;
   using dispatch_t =
@@ -53,11 +53,11 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, NumItemT>)
                       cub::NullType*,
                       num_items_t,
                       select_min,
-                      is_stable,
+                      is_deterministic,
                       policy_t>;
 #else // TUNE_BASE
   using dispatch_t = cub::
-    DispatchTopK<key_input_it_t, key_output_it_t, cub::NullType*, cub::NullType*, num_items_t, select_min, is_stable>;
+    DispatchTopK<key_input_it_t, key_output_it_t, cub::NullType*, cub::NullType*, num_items_t, select_min, is_deterministic>;
 #endif // TUNE_BASE
 
   // Retrieve axis parameters

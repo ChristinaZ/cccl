@@ -397,7 +397,7 @@ struct params_t
   static constexpr int logical_warp_items   = logical_warp_threads * items_per_thread;
   static constexpr int total_warps          = 2;
   static constexpr int tile_size            = items_per_thread * total_warps * logical_warp_threads;
-  static constexpr bool is_stable           = c2h::get<3, TestType>::value == stability::stable;
+  static constexpr bool is_deterministic    = c2h::get<3, TestType>::value == stability::stable;
 };
 
 C2H_TEST(
@@ -405,7 +405,7 @@ C2H_TEST(
 {
   using params             = params_t<TestType>;
   using type               = typename params::type;
-  using warp_sort_delegate = ::cuda::std::_If<params::is_stable, warp_stable_sort_keys_t, warp_sort_keys_t>;
+  using warp_sort_delegate = ::cuda::std::_If<params::is_deterministic, warp_stable_sort_keys_t, warp_sort_keys_t>;
 
   // Prepare test data
   c2h::device_vector<type> d_in(params::tile_size);
@@ -436,7 +436,7 @@ C2H_TEST("Warp sort keys-only on partial warp-tile works",
   using params = params_t<TestType>;
   using type   = typename params::type;
   using warp_sort_delegate =
-    ::cuda::std::_If<params::is_stable, warp_partial_stable_sort_keys_t, warp_partial_sort_keys_t>;
+    ::cuda::std::_If<params::is_deterministic, warp_partial_stable_sort_keys_t, warp_partial_sort_keys_t>;
 
   // Prepare test data
   c2h::device_vector<type> d_in(params::tile_size);
@@ -470,7 +470,7 @@ C2H_TEST("Warp sort on keys-value pairs works",
   using params             = params_t<TestType>;
   using key_type           = typename params::type;
   using value_type         = typename c2h::get<4, TestType>;
-  using warp_sort_delegate = ::cuda::std::_If<params::is_stable, warp_stable_sort_pairs_t, warp_sort_pairs_t>;
+  using warp_sort_delegate = ::cuda::std::_If<params::is_deterministic, warp_stable_sort_pairs_t, warp_sort_pairs_t>;
 
   // Prepare test data
   c2h::device_vector<key_type> d_keys_in(params::tile_size);
@@ -513,7 +513,7 @@ C2H_TEST("Warp sort on key-value pairs of a partial warp-tile works",
   using key_type   = typename params::type;
   using value_type = typename c2h::get<4, TestType>;
   using warp_sort_delegate =
-    ::cuda::std::_If<params::is_stable, warp_partial_stable_sort_pairs_t, warp_partial_sort_pairs_t>;
+    ::cuda::std::_If<params::is_deterministic, warp_partial_stable_sort_pairs_t, warp_partial_sort_pairs_t>;
 
   // Prepare test data
   c2h::device_vector<key_type> d_keys_in(params::tile_size);

@@ -18,8 +18,8 @@
 // %PARAM% TEST_LAUNCH lid 0:1:2
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairs, topk_pairs);
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairs, topk_min_pairs);
-DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairsStable, topk_pairs_stable);
-DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairsStable, topk_min_pairs_stable);
+DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::DeterministicTopKPairs, deterministic_topk_pairs);
+DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::DeterministicTopKMinPairs, deterministic_topk_min_pairs);
 /**
  * Custom comparator that compares a tuple type's first element using `operator <`.
  */
@@ -89,7 +89,7 @@ bool check_results(
       }
       else if (h_values_out[i] > h_values_in[j])
       {
-        // Since the results of API TopKMinPairs() and TopKPairs() are not stable.
+        // Since the results of API TopKMinPairs() and TopKPairs() are not deterministic.
         // There might be multiple items equaling to the value of kth element,
         // any of them can appear in the results. We need to find them from the input data.
         j++;
@@ -140,16 +140,16 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   const int num_key_seeds = 1;
   c2h::gen(C2H_SEED(num_key_seeds), keys_in);
 
-  const bool select_min    = GENERATE(false, true);
-  const bool is_descending = !select_min;
-  const bool is_stable     = GENERATE(false, true);
+  const bool select_min       = GENERATE(false, true);
+  const bool is_descending    = !select_min;
+  const bool is_deterministic = GENERATE(false, true);
 
   // Run the device-wide API
   if (select_min)
   {
-    if (is_stable)
+    if (is_deterministic)
     {
-      topk_min_pairs_stable(
+      deterministic_topk_min_pairs(
         thrust::raw_pointer_cast(keys_in.data()),
         thrust::raw_pointer_cast(keys_out.data()),
         thrust::raw_pointer_cast(values_in.data()),
@@ -170,9 +170,9 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   }
   else
   {
-    if (is_stable)
+    if (is_deterministic)
     {
-      topk_pairs_stable(
+      deterministic_topk_pairs(
         thrust::raw_pointer_cast(keys_in.data()),
         thrust::raw_pointer_cast(keys_out.data()),
         thrust::raw_pointer_cast(values_in.data()),
@@ -203,7 +203,7 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   sort_keys_and_values(h_keys_out, h_values_out, k, is_descending);
 
   bool res = false;
-  if (is_stable)
+  if (is_deterministic)
   {
     res = thrust::equal(h_keys_out.begin(), h_keys_out.end(), h_keys_in.begin());
     res = res & thrust::equal(h_values_out.begin(), h_values_out.end(), h_values_in.begin());

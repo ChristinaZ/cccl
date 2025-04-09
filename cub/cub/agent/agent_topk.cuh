@@ -298,7 +298,7 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename NumItemsT,
           bool SELECT_MIN,
-          bool IS_STABLE>
+          bool IS_DETERMINISTIC>
 struct AgentTopK
 {
   //---------------------------------------------------------------------
@@ -698,12 +698,12 @@ struct AgentTopK
             NumItemsT pos   = k - 1 - back_pos;
             d_keys_out[pos] = key;
 
-            if constexpr (!KEYS_ONLY && (!IS_STABLE))
+            if constexpr (!KEYS_ONLY && (!IS_DETERMINISTIC))
             {
               d_values_out[pos] = d_values_in[new_idx];
             }
           }
-          if constexpr (!KEYS_ONLY && IS_STABLE)
+          if constexpr (!KEYS_ONLY && IS_DETERMINISTIC)
           {
             if (new_idx < ref_last.load(cuda::memory_order_relaxed))
             {
@@ -742,7 +742,7 @@ struct AgentTopK
     if (__syncthreads_or(is_last_block))
     {
       // Store the final value
-      if constexpr (!KEYS_ONLY && IS_STABLE)
+      if constexpr (!KEYS_ONLY && IS_DETERMINISTIC)
       {
         for (int j = threadIdx.x; j < num_of_kth_needed; j += static_cast<size_t>(blockDim.x))
         {
@@ -886,7 +886,7 @@ struct AgentTopK
 
       if (pass == num_passes - 1)
       {
-        if constexpr (!KEYS_ONLY && IS_STABLE)
+        if constexpr (!KEYS_ONLY && IS_DETERMINISTIC)
         {
           volatile const NumItemsT num_of_kth_needed = counter->k;
           for (NumItemsT i = threadIdx.x; i < num_of_kth_needed; i += blockDim.x)

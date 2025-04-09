@@ -40,7 +40,7 @@ CUB_NAMESPACE_BEGIN
 //! and `__nv_bfloat16` 16-bit floating-point types.
 //!
 //! @par Stability
-//! DeviceTopK provide stable and unstable version.
+//! DeviceTopK provide deterministic and nondeterministic version.
 //! Usage Considerations
 //! +++++++++++++++++++++++++++++++++++++++++++++
 //!
@@ -55,9 +55,10 @@ CUB_NAMESPACE_BEGIN
 
 struct DeviceTopK
 {
-  //! @brief The function TopKPairsStable() will prioritize elements with smaller indices
+  //! @brief The function DeterministicTopKPairs() will prioritize elements with smaller indices
   // ！ when encountering multiple elements equal to the kth largest (or smallest) value.
   //!  In contrast, the function TopKPairs() will not do so.
+  //!  Both the results of DeterministicTopKPairs() and TopKPairs() are not sorted.
   //! @tparam KeyInputIteratorT
   //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
   //!
@@ -137,7 +138,7 @@ struct DeviceTopK
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
             typename NumItemsT>
-  CUB_RUNTIME_FUNCTION static cudaError_t TopKPairsStable(
+  CUB_RUNTIME_FUNCTION static cudaError_t DeterministicTopKPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
@@ -161,9 +162,10 @@ struct DeviceTopK
         d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
   }
 
-  //! @brief The function TopKMinPairsStable() will prioritize elements with smaller indices
+  //! @brief The function DeterministicTopKMinPairs() will prioritize elements with smaller indices
   // ！ when encountering multiple elements equal to the kth largest (or smallest) value.
   //!  In contrast, the function TopKMinPairs() will not do so.
+  //!  Both the results of DeterministicTopKMinPairs() and TopKMinPairs() are not sorted.
   //! @tparam KeyInputIteratorT
   //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
   //!
@@ -243,7 +245,7 @@ struct DeviceTopK
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
             typename NumItemsT>
-  CUB_RUNTIME_FUNCTION static cudaError_t TopKMinPairsStable(
+  CUB_RUNTIME_FUNCTION static cudaError_t DeterministicTopKMinPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
