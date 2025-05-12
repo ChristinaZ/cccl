@@ -437,7 +437,7 @@ struct AgentTopK
       }
       else
       {
-        block_load_input_t(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_elements, 0);
+        block_load_input_t(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_elements);
       }
 
       for (int j = 0; j < ITEMS_PER_THREAD; ++j)
