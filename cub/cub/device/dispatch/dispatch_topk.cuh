@@ -31,10 +31,7 @@
 
 CUB_NAMESPACE_BEGIN
 
-namespace detail
-{
-
-namespace topk
+namespace detail::topk
 {
 
 template <class KeyT>
@@ -842,6 +839,6 @@ struct DispatchTopK : SelectedPolicy
   }
 };
 
-} // namespace topk
-} // namespace detail
+} // namespace detail::topk
+
 CUB_NAMESPACE_END

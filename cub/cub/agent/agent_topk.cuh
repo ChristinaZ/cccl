@@ -25,8 +25,6 @@
 
 #include <cuda/atomic>
 
-#include <iterator>
-
 CUB_NAMESPACE_BEGIN
 /******************************************************************************
  * Tuning policy types
