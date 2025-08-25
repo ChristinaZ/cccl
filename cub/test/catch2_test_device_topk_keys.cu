@@ -6,9 +6,10 @@
 
 #include <cub/device/device_topk.cuh>
 
-#include <thrust/iterator/zip_iterator.h>
 #include <thrust/memory.h>
 #include <thrust/sort.h>
+
+#include <cuda/iterator>
 
 #include <algorithm>
 
@@ -107,7 +108,7 @@ struct inc_t
   }
 
   template <typename IndexT>
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE T operator()(IndexT x)
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE T operator()(IndexT x) const
   {
     return static_cast<T>(value_increment * x);
   }
@@ -131,8 +132,7 @@ C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", k
   const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto keys_in = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
 
   // Run the device-wide API
@@ -162,7 +162,7 @@ C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", k
 
   if (is_descending)
   {
-    auto keys_expected_it = thrust::make_reverse_iterator(keys_in + num_items);
+    auto keys_expected_it = cuda::std::make_reverse_iterator(keys_in + num_items);
     REQUIRE(thrust::equal(device_results.cbegin(), device_results.cend(), keys_expected_it));
   }
   else
@@ -189,8 +189,7 @@ C2H_TEST("DeviceTopK::TopKKeys: Test for large num_items", "[keys][topk][device]
   const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto keys_in = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
 
   // Run the device-wide API
@@ -220,7 +219,7 @@ C2H_TEST("DeviceTopK::TopKKeys: Test for large num_items", "[keys][topk][device]
 
   if (is_descending)
   {
-    auto keys_expected_it = thrust::make_reverse_iterator(keys_in + num_items);
+    auto keys_expected_it = cuda::std::make_reverse_iterator(keys_in + num_items);
     REQUIRE(thrust::equal(device_results.cbegin(), device_results.cend(), keys_expected_it));
   }
   else
@@ -254,8 +253,7 @@ C2H_TEST("DeviceTopK::TopKKeys:  Test for different data types for num_items and
   const k_items_t k = GENERATE_COPY(take(3, random(min_k, max_k)));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto keys_in = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
 
   // Run the device-wide API
@@ -285,7 +283,7 @@ C2H_TEST("DeviceTopK::TopKKeys:  Test for different data types for num_items and
 
   if (is_descending)
   {
-    auto keys_expected_it = thrust::make_reverse_iterator(keys_in + num_items);
+    auto keys_expected_it = cuda::std::make_reverse_iterator(keys_in + num_items);
     REQUIRE(thrust::equal(device_results.cbegin(), device_results.cend(), keys_expected_it));
   }
   else

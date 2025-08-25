@@ -7,8 +7,7 @@
 #include <cub/device/device_merge_sort.cuh>
 #include <cub/device/device_topk.cuh>
 
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/memory.h>
+#include <cuda/iterator>
 
 #include <algorithm>
 
@@ -25,7 +24,7 @@ template <typename key_t, typename value_t, typename num_items_t>
 void sort_keys_and_values(
   c2h::device_vector<key_t>& keys, c2h::device_vector<value_t>& values, num_items_t num_items, bool is_descending)
 {
-  auto zipped_it = thrust::make_zip_iterator(keys.begin(), values.begin());
+  auto zipped_it = cuda::make_zip_iterator(keys.begin(), values.begin());
 
   // Perform sort
   if (is_descending)
@@ -123,8 +122,8 @@ bool topk_with_iterator(
   bool res;
   if (is_descending)
   {
-    auto keys_expected_it   = thrust::make_reverse_iterator(keys_in + num_items);
-    auto values_expected_it = thrust::make_reverse_iterator(values_in + num_items);
+    auto keys_expected_it   = cuda::std::make_reverse_iterator(keys_in + num_items);
+    auto values_expected_it = cuda::std::make_reverse_iterator(values_in + num_items);
     res                     = check_results(
       keys_expected_it, values_expected_it, keys_out, values_out, num_items, static_cast<num_items_t>(k), is_descending);
   }
@@ -233,7 +232,7 @@ struct inc_t
   }
 
   template <typename IndexT>
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE T operator()(IndexT x)
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE T operator()(IndexT x) const
   {
     return static_cast<T>(value_increment * x);
   }
@@ -258,9 +257,8 @@ C2H_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]",
   const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
-  auto values_in = thrust::make_counting_iterator(value_t{});
+  auto keys_in   = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto values_in = cuda::make_counting_iterator(value_t{});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
   c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));
 
@@ -289,9 +287,8 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for large num_items", "[pairs][topk][devic
   const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
-  auto values_in = thrust::make_counting_iterator(value_t{});
+  auto keys_in   = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto values_in = cuda::make_counting_iterator(value_t{});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
   c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));
 
@@ -327,9 +324,8 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for different data types for num_items and
   const k_items_t k = GENERATE_COPY(take(3, random(min_k, max_k)));
 
   // Prepare input and output
-  auto keys_in =
-    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
-  auto values_in = thrust::make_counting_iterator(value_t{});
+  auto keys_in   = cuda::make_transform_iterator(cuda::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto values_in = cuda::make_counting_iterator(value_t{});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
   c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));
 
