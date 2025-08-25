@@ -303,7 +303,7 @@ struct AgentTopK
   static constexpr int TILE_ITEMS             = BLOCK_THREADS * ITEMS_PER_THREAD;
   static constexpr int num_buckets            = 1 << BITS_PER_PASS;
 
-  static constexpr bool KEYS_ONLY                = _CUDA_VSTD::is_same<ValueInputIteratorT, NullType>::value;
+  static constexpr bool KEYS_ONLY                = ::cuda::std::is_same<ValueInputIteratorT, NullType>::value;
   static constexpr int items_per_thread_for_scan = (num_buckets - 1) / BLOCK_THREADS + 1;
 
   // Parameterized BlockLoad type for input data
@@ -637,7 +637,7 @@ struct AgentTopK
     OutOffsetT k,
     int pass)
   {
-    const OffsetT buf_len    = _CUDA_VSTD::max((OffsetT) 1, num_items / COEFFICIENT_FOR_BUFFER);
+    const OffsetT buf_len    = ::cuda::std::max((OffsetT) 1, num_items / COEFFICIENT_FOR_BUFFER);
     load_from_original_input = counter->previous_len > buf_len;
     OffsetT current_len      = load_from_original_input ? num_items : counter->previous_len;
     in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
@@ -754,7 +754,7 @@ struct AgentTopK
     }
 
     const bool early_stop = (current_len == (OffsetT) current_k);
-    const OffsetT buf_len = _CUDA_VSTD::max((OffsetT) 1, num_items / COEFFICIENT_FOR_BUFFER);
+    const OffsetT buf_len = ::cuda::std::max((OffsetT) 1, num_items / COEFFICIENT_FOR_BUFFER);
     if (previous_len > buf_len)
     {
       load_from_original_input = true;

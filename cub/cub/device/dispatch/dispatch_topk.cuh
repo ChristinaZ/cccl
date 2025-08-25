@@ -46,7 +46,7 @@ struct sm90_tuning
   static constexpr int threads = 512; // Number of threads per block
 
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items = _CUDA_VSTD::max(1, (nominal_4b_items_per_thread * 4 / (int) sizeof(KeyInT)));
+  static constexpr int items = ::cuda::std::max(1, (nominal_4b_items_per_thread * 4 / (int) sizeof(KeyInT)));
   // Try to load 16 Bytes per thread. (int64(items=2);int32(items=4);int16(items=8)).
 
   static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
@@ -61,8 +61,8 @@ struct device_topk_policy_hub
   struct DefaultTuning
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 4;
-    static constexpr int ITEMS_PER_THREAD            = _CUDA_VSTD::min(
-      NOMINAL_4B_ITEMS_PER_THREAD, _CUDA_VSTD::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / (int) sizeof(KeyInT))));
+    static constexpr int ITEMS_PER_THREAD            = ::cuda::std::min(
+      NOMINAL_4B_ITEMS_PER_THREAD, ::cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / (int) sizeof(KeyInT))));
 
     static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
     static constexpr int COEFFICIENT_FOR_BUFFER = 128;
@@ -444,7 +444,7 @@ struct DispatchTopK : SelectedPolicy
   int ptx_version;
 
   using key_in_t                  = detail::it_value_t<KeyInputIteratorT>;
-  static constexpr bool KEYS_ONLY = _CUDA_VSTD::is_same<ValueInputIteratorT, NullType>::value;
+  static constexpr bool KEYS_ONLY = ::cuda::std::is_same<ValueInputIteratorT, NullType>::value;
   /*
    *
    * @param[in] d_temp_storage
@@ -549,7 +549,7 @@ struct DispatchTopK : SelectedPolicy
     // Specify temporary storage allocation requirements
     size_t size_counter   = sizeof(Counter<key_in_t, OffsetT, OutOffsetT>);
     size_t size_histogram = num_buckets * sizeof(OffsetT);
-    size_t num_candidates = _CUDA_VSTD::max((size_t) 256, (size_t) num_items / policy_t::COEFFICIENT_FOR_BUFFER);
+    size_t num_candidates = ::cuda::std::max((size_t) 256, (size_t) num_items / policy_t::COEFFICIENT_FOR_BUFFER);
 
     size_t allocation_sizes[6] = {
       size_counter,
@@ -602,8 +602,8 @@ struct DispatchTopK : SelectedPolicy
     topk_grid_size.y       = 1;
     int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
     topk_grid_size.x =
-      _CUDA_VSTD::min(static_cast<unsigned int>(topk_blocks_per_sm * num_sms),
-                      static_cast<unsigned int>((num_items - 1) / (items_per_thread * block_threads) + 1));
+      ::cuda::std::min(static_cast<unsigned int>(topk_blocks_per_sm * num_sms),
+                       static_cast<unsigned int>((num_items - 1) / (items_per_thread * block_threads) + 1));
 
 // Log topk_kernel configuration @todo check the kernel launch
 #ifdef CUB_DEBUG_LOG
@@ -660,8 +660,8 @@ struct DispatchTopK : SelectedPolicy
         topk_firstpass_grid_size.z = 1;
         topk_firstpass_grid_size.y = 1;
         topk_firstpass_grid_size.x =
-          _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
-                          (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+          ::cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
+                           (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
         THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
           .doit(
             topk_firstpass_kernel,
@@ -707,8 +707,8 @@ struct DispatchTopK : SelectedPolicy
     IdentifyCandidatesOp<key_in_t, !SelectMin, policy_t::BITS_PER_PASS> identify_candidates_op(
       counter->kth_key_bits, pass);
     topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
-    topk_grid_size.x   = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
-                                       (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+    topk_grid_size.x   = ::cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                        (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
     THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
       .doit(topk_lastfilter_kernel,
             d_keys_in,
