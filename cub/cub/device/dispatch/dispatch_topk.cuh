@@ -537,7 +537,7 @@ struct DispatchTopK : SelectedPolicy
     constexpr int items_per_thread = policy_t::ITEMS_PER_THREAD; // Items per thread
     constexpr int tile_size        = block_threads * items_per_thread; // Items per block
     int num_tiles                  = static_cast<int>(::cuda::ceil_div(num_items, tile_size)); // Num of blocks
-    constexpr int num_passes       = CalcNumPasses<key_in_t, policy_t::BITS_PER_PASS>();
+    constexpr int num_passes       = calc_num_passes<key_in_t, policy_t::BITS_PER_PASS>();
     constexpr int num_buckets      = 1 << policy_t::BITS_PER_PASS;
 
     if (static_cast<OffsetT>(k) >= num_items)

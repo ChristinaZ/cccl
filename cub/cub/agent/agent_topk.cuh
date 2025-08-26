@@ -32,48 +32,48 @@ CUB_NAMESPACE_BEGIN
 /**
  * Parameterizable tuning policy type for AgentTopK
  *
- * @tparam _BLOCK_THREADS
+ * @tparam BlockThreads
  *   Threads per thread block
  *
- * @tparam _ITEMS_PER_THREAD
+ * @tparam ItemsPerThread
  *   Items per thread (per tile of input)
  *
- * @tparam _BITS_PER_PASS
+ * @tparam BitsPerPass
  *   Number of bits processed per pass
  *
- * @tparam _COEFFICIENT_FOR_BUFFER
+ * @tparam CoefficientForBuffer
  *   The coefficient parameter for reducing the size of buffer.
- *   The size of buffer is `1/ _COEFFICIENT_FOR_BUFFER` of original input
+ *   The size of buffer is `1 / CoefficientForBuffer` of original input
  *
- * @tparam _LOAD_ALGORITHM
+ * @tparam LoadAlgorithm
  *   The BlockLoad algorithm to use
  *
- * @tparam _SCAN_ALGORITHM
+ * @tparam ScanAlgorithm
  *   The BlockScan algorithm to use
  */
 
-template <int _BLOCK_THREADS,
-          int _ITEMS_PER_THREAD,
-          int _BITS_PER_PASS,
-          int _COEFFICIENT_FOR_BUFFER,
-          BlockLoadAlgorithm _LOAD_ALGORITHM,
-          BlockScanAlgorithm _SCAN_ALGORITHM>
+template <int BlockThreads,
+          int ItemsPerThread,
+          int BitsPerPass,
+          int CoefficientForBuffer,
+          BlockLoadAlgorithm LoadAlgorithm,
+          BlockScanAlgorithm ScanAlgorithm>
 struct AgentTopKPolicy
 {
   /// Threads per thread block
-  static constexpr int BLOCK_THREADS = _BLOCK_THREADS;
+  static constexpr int BLOCK_THREADS = BlockThreads;
   /// Items per thread (per tile of input)
-  static constexpr int ITEMS_PER_THREAD = _ITEMS_PER_THREAD;
-  /// Number of BITS Processed per pass
-  static constexpr int BITS_PER_PASS = _BITS_PER_PASS;
+  static constexpr int ITEMS_PER_THREAD = ItemsPerThread;
+  /// Number of bits processed per pass
+  static constexpr int BITS_PER_PASS = BitsPerPass;
   /// Coefficient for reducing buffer size
-  static constexpr int COEFFICIENT_FOR_BUFFER = _COEFFICIENT_FOR_BUFFER;
+  static constexpr int COEFFICIENT_FOR_BUFFER = CoefficientForBuffer;
 
   /// The BlockLoad algorithm to use
-  static constexpr BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
+  static constexpr BlockLoadAlgorithm LOAD_ALGORITHM = LoadAlgorithm;
 
   /// The BlockScan algorithm to use
-  static constexpr BlockScanAlgorithm SCAN_ALGORITHM = _SCAN_ALGORITHM;
+  static constexpr BlockScanAlgorithm SCAN_ALGORITHM = ScanAlgorithm;
 };
 
 namespace detail::topk
@@ -147,10 +147,10 @@ struct alignas(128) Counter
 /**
  * Operations for calculating the bin index based on the input
  */
-template <typename T, int BITS_PER_PASS>
-_CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int CalcNumPasses()
+template <typename T, int BitsPerPass>
+_CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int calc_num_passes()
 {
-  return ::cuda::ceil_div<int>(sizeof(T) * 8, BITS_PER_PASS);
+  return ::cuda::ceil_div<int>(sizeof(T) * 8, BitsPerPass);
 }
 
 /**
@@ -159,10 +159,10 @@ _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int CalcNumPasses()
  * This way, we can skip some passes in the end at the cost of having an unsorted output.
  *
  */
-template <typename T, int BITS_PER_PASS>
-_CCCL_DEVICE constexpr int CalcStartBit(const int pass)
+template <typename T, int BitsPerPass>
+_CCCL_DEVICE constexpr int calc_start_bit(const int pass)
 {
-  int start_bit = static_cast<int>(sizeof(T) * 8) - (pass + 1) * BITS_PER_PASS;
+  int start_bit = static_cast<int>(sizeof(T) * 8) - (pass + 1) * BitsPerPass;
   if (start_bit < 0)
   {
     start_bit = 0;
@@ -173,17 +173,17 @@ _CCCL_DEVICE constexpr int CalcStartBit(const int pass)
 /**
  * Used in the bin ID calculation to exclude bits unrelated to the current pass
  */
-template <typename T, int BITS_PER_PASS>
-_CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
+template <typename T, int BitsPerPass>
+_CCCL_DEVICE constexpr unsigned calc_mask(const int pass)
 {
-  int num_bits = CalcStartBit<T, BITS_PER_PASS>(pass - 1) - CalcStartBit<T, BITS_PER_PASS>(pass);
+  int num_bits = calc_start_bit<T, BitsPerPass>(pass - 1) - calc_start_bit<T, BitsPerPass>(pass);
   return (1 << num_bits) - 1;
 }
 
 /**
  * Get the bin ID from the value of element
  */
-template <typename T, bool FLIP, int BITS_PER_PASS>
+template <typename T, bool FlipBits, int BitsPerPass>
 struct ExtractBinOp
 {
   int pass{};
@@ -193,15 +193,15 @@ struct ExtractBinOp
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE ExtractBinOp(int pass)
       : pass(pass)
   {
-    start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
-    mask      = CalcMask<T, BITS_PER_PASS>(pass);
+    start_bit = calc_start_bit<T, BitsPerPass>(pass);
+    mask      = calc_mask<T, BitsPerPass>(pass);
   }
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
   {
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
-    if constexpr (FLIP)
+    if constexpr (FlipBits)
     {
       bits = ~bits;
     }
@@ -213,7 +213,7 @@ struct ExtractBinOp
 /**
  * Check if the input element is still a candidate for the target pass.
  */
-template <typename T, bool FLIP, int BITS_PER_PASS>
+template <typename T, bool FlipBits, int BitsPerPass>
 struct IdentifyCandidatesOp
 {
   typename Traits<T>::UnsignedBits& kth_key_bits;
@@ -223,7 +223,7 @@ struct IdentifyCandidatesOp
       : kth_key_bits(kth_key_bits)
       , pass(pass - 1)
   {
-    start_bit = CalcStartBit<T, BITS_PER_PASS>(this->pass);
+    start_bit = calc_start_bit<T, BitsPerPass>(this->pass);
   }
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
@@ -231,7 +231,7 @@ struct IdentifyCandidatesOp
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
 
-    if constexpr (FLIP)
+    if constexpr (FlipBits)
     {
       bits = ~bits;
     }
@@ -451,7 +451,7 @@ struct AgentTopK
    * Fused filtering of the current pass and building histogram for the next pass
    */
   template <bool IS_FIRST_PASS>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogram(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void filter_and_histogram(
     key_in_t* in_buf,
     OffsetT* in_idx_buf,
     key_in_t* out_buf,
@@ -602,7 +602,7 @@ struct AgentTopK
         counter->k                                     = k - prev; // how many values still are there to find
         counter->len                                   = cur - prev; // number of values in next pass
         typename Traits<key_in_t>::UnsignedBits bucket = i;
-        int start_bit                                  = CalcStartBit<key_in_t, BITS_PER_PASS>(pass);
+        int start_bit                                  = calc_start_bit<key_in_t, BITS_PER_PASS>(pass);
         counter->kth_key_bits |= bucket << start_bit;
       }
     }
@@ -780,7 +780,7 @@ struct AgentTopK
     }
     __syncthreads();
 
-    FilterAndHistogram<IS_FIRST_PASS>(
+    filter_and_histogram<IS_FIRST_PASS>(
       in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, histogram_smem, pass, early_stop);
 
     __threadfence();
@@ -812,7 +812,7 @@ struct AgentTopK
         }
       }
 
-      constexpr int num_passes = CalcNumPasses<key_in_t, BITS_PER_PASS>();
+      constexpr int num_passes = calc_num_passes<key_in_t, BITS_PER_PASS>();
       Scan(histogram, histogram_smem);
       __syncthreads();
       ChooseBucket(counter, histogram_smem, current_k, pass);
