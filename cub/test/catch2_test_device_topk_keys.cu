@@ -14,6 +14,7 @@
 #include <algorithm>
 
 #include "catch2_radix_sort_helper.cuh"
+#include "catch2_test_device_topk_common.cuh"
 #include "catch2_test_launch_helper.h"
 #include <c2h/catch2_test_helper.h>
 
@@ -87,32 +88,6 @@ C2H_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
 
   REQUIRE(host_results == device_results);
 }
-
-template <typename T>
-struct inc_t
-{
-  size_t num_item;
-  double value_increment;
-
-  inc_t(size_t num_item)
-      : num_item(num_item)
-  {
-    if (num_item < cuda::std::numeric_limits<T>::max())
-    {
-      value_increment = 1;
-    }
-    else
-    {
-      value_increment = double(cuda::std::numeric_limits<T>::max()) / num_item;
-    }
-  }
-
-  template <typename IndexT>
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE T operator()(IndexT x) const
-  {
-    return static_cast<T>(value_increment * x);
-  }
-};
 
 C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", key_types)
 {
